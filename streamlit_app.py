@@ -1,466 +1,426 @@
 import streamlit as st
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import urllib.parse
-import json
-import random
 import concurrent.futures
+import random
+import difflib
 import time
-from datetime import datetime
-import re
 
 # ==========================================
-# 1. CONFIGURATION & SETUP
+# 1. PAGE CONFIGURATION & CSS
 # ==========================================
 
-st.set_page_config(page_title="ToonSearch Web", layout="wide", page_icon="📺")
+st.set_page_config(
+    page_title="ToonSearch Ultimate",
+    page_icon="📺",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- Session State Initialization ---
-if 'search_history' not in st.session_state:
-    st.session_state.search_history = []
-if 'favorites' not in st.session_state:
-    st.session_state.favorites = []
-if 'results' not in st.session_state:
-    st.session_state.results = []
-if 'searching' not in st.session_state:
-    st.session_state.searching = False
-if 'selected_item' not in st.session_state:
-    st.session_state.selected_item = None
-if 'trending_results' not in st.session_state:
-    st.session_state.trending_results = []
+# Modern Dark UI CSS
+st.markdown("""
+<style>
+    /* General App Styling */
+    .stApp { background-color: #0e1117; }
+    
+    /* Card Styling */
+    .card {
+        background-color: #1a1c24;
+        border: 1px solid #2d2f36;
+        border-radius: 10px;
+        padding: 0;
+        margin-bottom: 15px;
+        transition: all 0.2s ease-in-out;
+        overflow: hidden;
+    }
+    .card:hover {
+        border-color: #ff4b4b;
+        transform: translateY(-3px);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    }
+    
+    /* Image Styling */
+    .card-img {
+        width: 100%;
+        height: 160px;
+        object-fit: cover;
+        opacity: 0.85;
+        transition: opacity 0.2s;
+    }
+    .card:hover .card-img { opacity: 1; }
+    
+    /* Text Styling */
+    .card-body { padding: 12px; }
+    .title-text {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #f0f2f6;
+        margin-bottom: 5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    /* Badges */
+    .site-badge {
+        background-color: #ff4b4b;
+        color: white;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        display: inline-block;
+    }
+    
+    /* Button Overrides */
+    div.stButton > button {
+        width: 100%;
+        border-radius: 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- Constants ---
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-]
-
-# Expanded list of sites
-DEFAULT_SITES = [
-    { "name": "Toonworld4all", "url": "https://toonworld4all.me/?s={}", "trending_url": "https://toonworld4all.me/" },
-    { "name": "RareToonsIndia", "url": "https://raretoonsindia.rtilinks.com/?s={}", "trending_url": "https://raretoonsindia.rtilinks.com/" },
-    { "name": "DeadToonsIndia", "url": "https://deadtoons.one/?s={}", "trending_url": "https://deadtoons.one/" },
-    { "name": "AnimeMafia", "url": "https://animemafia.in/?s={}", "trending_url": "https://animemafia.in/" },
-    { "name": "AnimeKaizoku", "url": "https://animekaizoku.com/?s={}", "trending_url": "https://animekaizoku.com/" },
-    { "name": "GogoAnime", "url": "https://gogoanime.vc/search.html?keyword={}", "trending_url": "https://gogoanime.vc/" },
-    { "name": "AnimixPlay", "url": "https://animixplay.to/?s={}", "trending_url": "https://animixplay.to/" },
-    { "name": "KayoAnime", "url": "https://kayoanime.com/?s={}", "trending_url": "https://kayoanime.com/" },
-    { "name": "OngoingAnime", "url": "https://ongoinganime.com/?s={}", "trending_url": "https://ongoinganime.com/" },
-]
+# ==========================================
+# 2. CONSTANTS & DATA
+# ==========================================
 
 QUERY_EXPANSIONS = {
-    "s1": "Season 1", "s2": "Season 2", "s3": "Season 3", "s4": "Season 4", "s5": "Season 5",
-    "ep": "Episode", "eps": "Episodes", "mov": "Movie", "pkmn": "Pokemon", "dbz": "Dragon Ball Z",
-    "db": "Dragon Ball", "op": "One Piece", "nar": "Naruto", "bor": "Boruto", "snk": "Attack on Titan",
-    "aot": "Attack on Titan", "mha": "My Hero Academia"
+    "s1": "Season 1", "s2": "Season 2", "s3": "Season 3", "ep": "Episode", 
+    "mov": "Movie", "pkmn": "Pokemon", "dbz": "Dragon Ball Z", "op": "One Piece",
+    "mha": "My Hero Academia", "aot": "Attack on Titan", "jjk": "Jujutsu Kaisen",
+    "ds": "Demon Slayer", "dora": "Doraemon", "shin": "Shin Chan"
 }
 
-POPULAR_SEARCHES = [
-    "One Piece", "Jujutsu Kaisen", "Frieren", "Spy x Family", "My Hero Academia",
-    "Dragon Ball Z", "Pokemon", "Naruto", "Demon Slayer", "Attack on Titan"
+POPULAR_TITLES = [
+    "Pokemon", "Doraemon", "Shinchan", "Dragon Ball Z", "Naruto Shippuden", 
+    "One Piece", "Ben 10", "Jujutsu Kaisen", "Demon Slayer", "Chainsaw Man"
 ]
 
+SITES = [
+    { "name": "Toonworld4all", "url": "https://toonworld4all.me/?s={}" },
+    { "name": "RareToons", "url": "https://raretoonsindia.rtilinks.com/?s={}" },
+    { "name": "DeadToons", "url": "https://deadtoons.one/?s={}" },
+    { "name": "AnimeMafia", "url": "https://animemafia.in/?s={}" },
+    { "name": "PureToons", "url": "https://puretoons.me/?s={}" },
+    { "name": "StarToons", "url": "https://startoonsindia.com/?s={}" },
+    { "name": "CartoonsArea", "url": "https://cartoonsarea.xyz/?s={}" },
+    { "name": "ToonNation", "url": "https://toonnation.in/?s={}" },
+    { "name": "AnimeTM", "url": "https://animetm.org/?s={}" }
+]
+
+# Initialize Session State
+if 'results' not in st.session_state: st.session_state.results = []
+if 'history' not in st.session_state: st.session_state.history = []
+if 'link_cache' not in st.session_state: st.session_state.link_cache = {}
+if 'search_active' not in st.session_state: st.session_state.search_active = False
+
 # ==========================================
-# 2. HELPER & LOGIC FUNCTIONS
+# 3. CORE LOGIC (SCRAPING)
 # ==========================================
 
-@st.cache_data
-def get_sites():
-    return DEFAULT_SITES
-
-def get_headers():
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+def get_scraper(proxy_url=None):
+    """Creates a browser session that looks like a real user."""
+    options = {
+        'browser': 'chrome',
+        'platform': 'windows',
+        'mobile': False
     }
+    scraper = cloudscraper.create_scraper(browser=options)
+    if proxy_url:
+        scraper.proxies = {'http': proxy_url, 'https': proxy_url}
+    return scraper
 
-def extract_metadata(title):
-    """Extract year, quality, and audio from title."""
-    year_match = re.search(r'\b(19|20)\d{2}\b', title)
-    year = year_match.group(0) if year_match else None
-    
-    quality = list(set(re.findall(r'\b(360p|480p|720p|1080p|4K|2160p)\b', title, re.IGNORECASE)))
-    audio = []
-    if re.search(r'\bhindi\b', title, re.IGNORECASE): audio.append("Hindi")
-    if re.search(r'\benglish\b', title, re.IGNORECASE): audio.append("English")
-    if re.search(r'\bjapanese\b|\bjap\b', title, re.IGNORECASE): audio.append("Japanese")
-    if re.search(r'\bdual\s*audio\b', title, re.IGNORECASE): audio.append("Dual Audio")
-    
-    return year, quality, audio
+def expand_query(query):
+    """Converts 'pkmn s1' to 'Pokemon Season 1'."""
+    words = query.split()
+    expanded = [QUERY_EXPANSIONS.get(w.lower(), w) for w in words]
+    return " ".join(expanded)
 
-def scrape_single_site(site, query):
+def scrape_worker(site, query, proxy=None):
+    """Runs in a background thread to scrape a single site."""
     results = []
+    scraper = get_scraper(proxy)
     try:
         url = site['url'].format(urllib.parse.quote_plus(query))
-        resp = requests.get(url, headers=get_headers(), timeout=10)
+        # 10s timeout to avoid hanging the app
+        resp = scraper.get(url, timeout=10)
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            articles = (soup.select('article') or soup.select('.post-summary') or 
-                        soup.select('.post-item') or soup.select('.item') or
-                        soup.select('.last-items') or soup.select('.video_block')) # More selectors
+            
+            # Universal Selector: Finds articles, posts, or result items
+            items = (
+                soup.select('article') or 
+                soup.select('.post-summary') or 
+                soup.select('.result-item') or 
+                soup.select('.post') or
+                soup.select('.item') or
+                soup.select('div[class*="post"]')
+            )
 
-            for item in articles:
+            for item in items:
                 try:
-                    a_tag = item.find('a', href=True)
+                    # Find Title & Link
+                    title_node = item.find(['h1', 'h2', 'h3', 'a'], class_=['title', 'entry-title', 'post-title'])
+                    
+                    # Fallback strategies
+                    if not title_node and item.name == 'a': title_node = item
+                    if not title_node: 
+                        title_node = item.find('a', attrs={'rel': 'bookmark'})
+                    
+                    if not title_node: continue
+                    
+                    # Extract Anchor Tag
+                    a_tag = title_node if title_node.name == 'a' else title_node.find('a')
+                    if not a_tag: a_tag = item.find('a', href=True)
+                    
                     if not a_tag: continue
-
                     link = a_tag['href']
                     title = a_tag.get_text(strip=True)
-                    if not title: continue
                     
+                    # Basic validation
+                    if not title or len(title) < 3: continue
+
+                    # Find Thumbnail
+                    img_src = "https://via.placeholder.com/300x180?text=No+Preview"
                     img = item.find('img')
-                    img_src = None
                     if img:
-                        for attr in ['data-src', 'data-original', 'src']:
+                        # Handle Lazy Loading (common in these sites)
+                        for attr in ['data-src', 'data-original', 'src', 'data-lazy-src', 'data-srcset']:
                             val = img.get(attr)
-                            if val and val.startswith('http'):
-                                img_src = val
+                            if val and 'http' in val:
+                                img_src = val.split(' ')[0] # take first url if multiple
                                 break
                     
-                    if not img_src: img_src = "https://via.placeholder.com/150x225?text=No+Image"
-
-                    year, quality, audio = extract_metadata(title)
-                    
-                    results.append({
-                        'site': site['name'], 'title': title, 'link': link, 'thumb': img_src,
-                        'year': year, 'quality': quality, 'audio': audio,
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
-                except Exception as e:
-                    # st.write(f"Error parsing item from {site['name']}: {e}")
-                    continue
-    except requests.exceptions.RequestException as e:
-        st.sidebar.warning(f"Could not connect to {site['name']}. It may be down.")
+                    results.append({'site': site['name'], 'title': title, 'link': link, 'thumb': img_src})
+                except: continue
     except Exception as e:
-        st.sidebar.error(f"An unexpected error occurred with {site['name']}: {e}")
-        
-    return results
-
-@st.cache_data(ttl=3600) # Cache for 1 hour
-def get_trending_content(selected_sites):
-    """Scrapes the homepage of selected sites for the latest posts."""
-    all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(scrape_trending_site, s) for s in selected_sites if 'trending_url' in s]
-        for future in concurrent.futures.as_completed(futures):
-            all_results.extend(future.result())
-    # Sort by timestamp to get the latest
-    all_results.sort(key=lambda x: x['timestamp'], reverse=True)
-    return all_results[:50] # Return top 50
-
-def scrape_trending_site(site):
-    """Scrapes a single site's homepage for trending items."""
-    results = []
-    try:
-        resp = requests.get(site['trending_url'], headers=get_headers(), timeout=10)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # Look for links in main content areas and lists
-            content_area = soup.find('main') or soup.find('div', class_='content') or soup
-            articles = content_area.find_all('a', href=True)
-            
-            for a_tag in articles[:10]: # Limit to 10 items per site to avoid overload
-                title = a_tag.get_text(strip=True)
-                if len(title) < 10: continue # Skip short/empty links
-                
-                link = a_tag['href']
-                img = a_tag.find('img')
-                img_src = None
-                if img:
-                    for attr in ['data-src', 'src']:
-                        val = img.get(attr)
-                        if val and val.startswith('http'):
-                            img_src = val
-                            break
-                if not img_src: img_src = "https://via.placeholder.com/150x225?text=No+Image"
-                
-                year, quality, audio = extract_metadata(title)
-                
-                results.append({
-                    'site': site['name'], 'title': title, 'link': link, 'thumb': img_src,
-                    'year': year, 'quality': quality, 'audio': audio,
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-    except Exception:
-        # Silently fail for trending, as it's non-critical
+        # Silently fail for individual sites to keep app running
         pass
     return results
 
-def get_deep_links(url):
-    found = []
+def get_deep_links(url, proxy=None):
+    """Scrapes the download page for Mega, Drive, etc."""
+    links = []
+    scraper = get_scraper(proxy)
     try:
-        resp = requests.get(url, headers=get_headers(), timeout=10)
+        resp = scraper.get(url, timeout=12)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        keywords = ['download', 'drive', 'mega', '480p', '720p', '1080p', 'watch', 'stream', 'mirror']
-        content = soup.find('div', class_=['entry-content', 'post-content']) or soup
+        whitelist = ['drive', 'mega', 'download', '480p', '720p', '1080p', 'batch', 'zip', 'watch', 'magnet', 'torrent']
+        
+        # Look in the main content area
+        content = soup.find('div', class_=['entry-content', 'post-content', 'the-content']) or soup
         
         for a in content.find_all('a', href=True):
-            txt = a.get_text(strip=True).lower()
+            txt = a.get_text(" ", strip=True).lower()
             href = a['href']
-            if any(k in txt for k in keywords) or any(k in href.lower() for k in keywords) or 'btn' in str(a.get('class', '')):
-                name = a.get_text(strip=True)[:60] or "Download/Watch Link"
-                found.append((name, href))
+            
+            if 'javascript' in href or len(href) < 5 or href.startswith('#'): continue
+            
+            # Check keywords or button classes
+            if any(w in txt for w in whitelist) or 'btn' in str(a.get('class', '')):
+                name = txt[:40].title().strip() 
+                if len(name) < 3: name = "Download Link"
+                links.append((name, href))
     except: pass
-    return list(set(found))
-
-def toggle_favorite(item):
-    item_key = f"{item['title']}_{item['site']}"
-    if item_key in [f"{fav['title']}_{fav['site']}" for fav in st.session_state.favorites]:
-        st.session_state.favorites = [fav for fav in st.session_state.favorites if f"{fav['title']}_{fav['site']}" != item_key]
-    else:
-        st.session_state.favorites.append(item)
+    return list(set(links))
 
 # ==========================================
-# 3. STREAMLIT UI & RESPONSIVE CSS
+# 4. CALLBACKS (Input Handling)
 # ==========================================
 
-def apply_custom_css():
-    st.markdown("""
-    <style>
-        /* Main container for grid layout */
-        .div-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-        }
-        
-        /* Result card styling */
-        .result-card {
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            padding: 1rem;
-            background-color: #fff;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
-            transition: transform 0.2s;
-        }
-        .result-card:hover {
-            transform: translateY(-5px);
-        }
+def set_search_query(text):
+    """Updates the search bar and triggers search state."""
+    st.session_state['main_search'] = text
+    st.session_state['search_active'] = True
 
-        /* Badges */
-        .badge {
-            display: inline-block;
-            padding: 0.2em 0.6em;
-            margin: 0.1em;
-            font-size: 0.75em;
-            border-radius: 0.5rem;
-            font-weight: 500;
-        }
-        .badge-quality { background-color: #e0f2fe; color: #0369a1; }
-        .badge-audio { background-color: #fef3c7; color: #92400e; }
-        .badge-year { background-color: #ede9fe; color: #5b21b6; }
+# ==========================================
+# 5. SIDEBAR
+# ==========================================
 
-        /* Dark mode adjustments */
-        .stApp[data-theme="dark"] .result-card {
-            background-color: #2b2b2b;
-            border-color: #444;
-        }
-        
-        /* Make buttons full width on small screens */
-        @media (max-width: 768px) {
-            .stButton > button {
-                width: 100%;
-            }
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-apply_custom_css()
-
-# --- Main Title ---
-st.title("📺 ToonSearch: Anime & Cartoon Hub")
-
-# --- Navigation Tabs ---
-search_tab, trending_tab, favorites_tab, history_tab = st.tabs(["🔍 Search", "🔥 Trending", "⭐ Favorites", "🕐 History"])
-
-# --- Sidebar Configuration ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.title("⚙️ Settings")
     
-    selected_sites_names = st.multiselect(
-        "Select Sources", [s['name'] for s in get_sites()], 
-        default=[s['name'] for s in get_sites()]
-    )
+    proxy_input = st.text_input("Proxy (Optional)", placeholder="http://ip:port")
+    
+    st.subheader("Sources")
+    
+    # Select All / Clear Logic
+    col_s1, col_s2 = st.columns(2)
+    if col_s1.button("Select All"): st.session_state['selected_sites'] = [s['name'] for s in SITES]
+    if col_s2.button("Clear"): st.session_state['selected_sites'] = []
+    
+    # Multiselect with State
+    default_opts = st.session_state.get('selected_sites', [s['name'] for s in SITES])
+    selected_sites = st.multiselect("Active Sites", [s['name'] for s in SITES], default=default_opts, key='selected_sites')
+
+    st.subheader("Filters")
+    f_hindi = st.checkbox("Hindi / Dual Audio", value=False)
+    f_1080 = st.checkbox("1080p Only", value=False)
     
     st.markdown("---")
-    st.subheader("🚀 Popular Searches")
-    for search_term in POPULAR_SEARCHES:
-        if st.button(search_term, key=f"pop_{search_term}", use_container_width=True):
-            st.session_state.popular_search_query = search_term
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("🎛️ Filters")
-    filter_audio = st.multiselect("Audio", ["Hindi", "English", "Japanese", "Dual Audio"])
-    filter_quality = st.multiselect("Quality", ["480p", "720p", "1080p", "4K"])
     
-    st.markdown("---")
-    st.subheader("ℹ️ About")
-    st.info("This app scrapes publicly available websites. It does not host any content.")
-
-# --- Search Tab ---
-with search_tab:
-    # Use popular search if triggered from sidebar
-    query = st.text_input(
-        "Enter Anime Name (e.g. Pokemon, Naruto)", 
-        placeholder="Search...",
-        value=st.session_state.get('popular_search_query', '')
-    )
-    if 'popular_search_query' in st.session_state:
-        del st.session_state.popular_search_query
-
-    if st.button("Search", type="primary", use_container_width=True) and query:
-        st.session_state.results = []
-        st.session_state.searching = True
-        st.session_state.selected_item = None # Clear detail view on new search
-        
-        if query not in st.session_state.search_history:
-            st.session_state.search_history.insert(0, query)
-            st.session_state.search_history = st.session_state.search_history[:10]
-        
-        expanded_query = " ".join([QUERY_EXPANSIONS.get(w.lower(), w) for w in query.split()])
-        active_sites = [s for s in get_sites() if s['name'] in selected_sites_names]
-        
-        with st.status(f"Searching for: `{expanded_query}` across {len(active_sites)} sites..."):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(scrape_single_site, s, expanded_query) for s in active_sites]
-                for future in concurrent.futures.as_completed(futures):
-                    st.session_state.results.extend(future.result())
-        
-        st.session_state.searching = False
+    if st.session_state.history:
+        st.subheader("🕒 History")
+        for h in st.session_state.history:
+            # Use callback to fill input
+            st.button(f"↺ {h}", on_click=set_search_query, args=(h,), use_container_width=True)
+            
+    if st.button("🗑️ Clear History"):
+        st.session_state.history = []
         st.rerun()
 
-    # Display Detailed View if an item is selected
-    if st.session_state.selected_item:
-        with st.container():
-            with st.expander("📄 Detailed View", expanded=True):
-                item = st.session_state.selected_item
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    st.image(item['thumb'], width=200)
-                with col2:
-                    st.markdown(f"### {item['title']}")
-                    st.caption(f"**Source:** {item['site']}")
-                    deep_links = get_deep_links(item['link'])
-                    if deep_links:
-                        st.markdown("**Direct Links:**")
-                        for name, url in deep_links:
-                            st.markdown(f"- [{name}]({url})")
-                    else:
-                        st.warning("No direct links found on the page.")
-                    st.link_button("Go to Original Page", item['link'])
-                st.markdown("---")
+# ==========================================
+# 6. MAIN INTERFACE
+# ==========================================
 
-    # Display Search Results
-    if st.session_state.results:
-        results_to_show = st.session_state.results
-        
-        # Apply filters
-        if filter_audio:
-            results_to_show = [r for r in results_to_show if any(a in r['audio'] for a in filter_audio)]
-        if filter_quality:
-            results_to_show = [r for r in results_to_show if any(q in r['quality'] for q in filter_quality)]
+st.title("📺 ToonSearch Ultimate")
 
-        st.write(f"Found **{len(results_to_show)}** results.")
-        
-        st.markdown('<div class="div-container">', unsafe_allow_html=True)
-        for i, res in enumerate(results_to_show):
-            with st.container():
-                # FIX: Removed st.card() and adjusted indentation
-                st.markdown(f"""
-                <div class="result-card">
-                    <img src="{res['thumb']}" style="width:100%; border-radius:5px;">
-                    <h4>{res['title']}</h4>
-                    <p style="font-size:0.9em; color:grey;">
-                        Source: {res['site']}
-                        {' | Year: ' + res['year'] if res['year'] else ''}
-                    </p>
-                    <div>
-                        {' '.join([f'<span class="badge badge-quality">{q}</span>' for q in res['quality']])}
-                        {' '.join([f'<span class="badge badge-audio">{a}</span>' for a in res['audio']])}
-                        {f'<span class="badge badge-year">{res["year"]}</span>' if res['year'] else ''}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("📄 Details", key=f"detail_{i}"):
-                        st.session_state.selected_item = res
-                        st.rerun()
-                with col2:
-                    if st.button("⭐", key=f"fav_{i}"):
-                        toggle_favorite(res)
-                        st.rerun()
-                with col3:
-                    st.link_button("Visit", res['link'])
-        st.markdown('</div>', unsafe_allow_html=True)
+# Search Bar
+col_input, col_btn = st.columns([5, 1])
+with col_input:
+    query = st.text_input("Search Anime...", placeholder="e.g. Pokemon Season 1", key="main_search")
 
-    elif not st.session_state.searching and query:
-        st.info("No results found. Try different keywords or sources.")
+with col_btn:
+    # Button just triggers rerun, logic handles the rest
+    if st.button("SEARCH", type="primary", use_container_width=True):
+        st.session_state.search_active = True
 
-# --- Trending Tab ---
-with trending_tab:
-    st.header("🔥 Trending Now")
-    if not st.session_state.trending_results:
-        active_sites = [s for s in get_sites() if s['name'] in selected_sites_names]
-        with st.spinner("Fetching latest content..."):
-            st.session_state.trending_results = get_trending_content(active_sites)
+# Logic: Perform Search
+if st.session_state.search_active and query:
+    st.session_state.search_active = False # Reset trigger
     
-    if st.session_state.trending_results:
-        st.write("Showing the latest posts from your selected sources.")
-        st.markdown('<div class="div-container">', unsafe_allow_html=True)
-        for i, res in enumerate(st.session_state.trending_results):
-             with st.container():
-                # FIX: Removed st.card() and adjusted indentation
-                st.markdown(f"""
-                <div class="result-card">
-                    <img src="{res['thumb']}" style="width:100%; border-radius:5px;">
-                    <h4>{res['title']}</h4>
-                    <p style="font-size:0.9em; color:grey;">Source: {res['site']}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button("View", key=f"trend_view_{i}"):
-                    st.session_state.selected_item = res
-                    st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.warning("Could not fetch trending content. Check your selected sources.")
+    # 1. Expand Query
+    expanded_q = expand_query(query)
+    
+    # 2. Update History
+    if query not in st.session_state.history:
+        st.session_state.history.insert(0, query)
+        st.session_state.history = st.session_state.history[:8]
 
-# --- Favorites Tab ---
-with favorites_tab:
-    st.header("⭐ Your Favorites")
-    if st.session_state.favorites:
-        for fav in st.session_state.favorites:
-            with st.container():
-                # FIX: Removed st.card() and adjusted indentation
-                st.markdown(f"""
-                <div class="result-card">
-                    <img src="{fav['thumb']}" style="width:100%; border-radius:5px;">
-                    <h4>{fav['title']}</h4>
-                    <p style="font-size:0.9em; color:grey;">Source: {fav['site']}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.link_button("Visit", fav['link'], use_container_width=True)
-                with col2:
-                    if st.button("Remove", key=f"remove_{fav['link']}", use_container_width=True):
-                        toggle_favorite(fav)
-                        st.rerun()
+    # 3. Filter Sites
+    active_site_objs = [s for s in SITES if s['name'] in selected_sites]
+    
+    if not active_site_objs:
+        st.error("⚠️ Please select at least one site from the sidebar.")
     else:
-        st.info("No favorites yet. Click the star icon on search results to add them here.")
+        # 4. Run Scrapers
+        status_container = st.status(f"🔍 Searching for: **{expanded_q}**", expanded=True)
+        results_accumulator = []
+        
+        start_time = time.time()
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            # Submit tasks
+            future_to_site = {executor.submit(scrape_worker, s, expanded_q, proxy_input): s for s in active_site_objs}
+            
+            # Process results as they come in
+            for future in concurrent.futures.as_completed(future_to_site):
+                site = future_to_site[future]
+                try:
+                    data = future.result()
+                    if data:
+                        results_accumulator.extend(data)
+                        status_container.write(f"✅ **{site['name']}**: Found {len(data)} results")
+                    else:
+                        status_container.write(f"❌ **{site['name']}**: No results")
+                except Exception as e:
+                    status_container.write(f"⚠️ **{site['name']}**: Connection Error")
+        
+        duration = time.time() - start_time
+        status_container.update(label=f"Search Complete in {duration:.2f}s", state="complete", expanded=False)
+        st.session_state.results = results_accumulator
 
-# --- History Tab ---
-with history_tab:
-    st.header("🕐 Search History")
-    if st.session_state.search_history:
-        for term in st.session_state.search_history:
-            if st.button(term, key=f"hist_{term}", use_container_width=True):
-                st.session_state.popular_search_query = term
-                st.rerun()
-    else:
-        st.info("No search history yet.")
+# ==========================================
+# 7. DISPLAY RESULTS
+# ==========================================
+
+if st.session_state.results:
+    data = st.session_state.results
+    
+    # Apply Filters
+    if f_hindi: 
+        data = [r for r in data if "hindi" in r['title'].lower() or "dual" in r['title'].lower()]
+    if f_1080: 
+        data = [r for r in data if "1080p" in r['title'].lower()]
+
+    # Result Header
+    st.divider()
+    c1, c2 = st.columns([3, 1])
+    c1.subheader(f"Results ({len(data)})")
+    
+    # "Save Links" Feature
+    if data:
+        text_data = "\n".join([f"{r['title']} | {r['link']}" for r in data])
+        c2.download_button("💾 Save List", text_data, "anime_links.txt")
+
+    # Grid Display
+    cols = st.columns(3)
+    for idx, item in enumerate(data):
+        with cols[idx % 3]:
+            # HTML Card
+            st.markdown(f"""
+            <div class="card">
+                <img src="{item['thumb']}" class="card-img">
+                <div class="card-body">
+                    <div class="title-text" title="{item['title']}">{item['title']}</div>
+                    <span class="site-badge">{item['site']}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Action Buttons
+            b1, b2 = st.columns(2)
+            with b1:
+                st.link_button("🌐 Visit", item['link'], use_container_width=True)
+            
+            with b2:
+                # Unique key for every button
+                btn_key = f"dl_{idx}_{hash(item['link'])}"
+                if st.button("📥 Links", key=btn_key, use_container_width=True):
+                    # Check cache
+                    if item['link'] not in st.session_state.link_cache:
+                        with st.spinner("Extracting..."):
+                            links = get_deep_links(item['link'], proxy_input)
+                            st.session_state.link_cache[item['link']] = links
+            
+            # Show Extracted Links
+            if item['link'] in st.session_state.link_cache:
+                links = st.session_state.link_cache[item['link']]
+                with st.expander("Downloads", expanded=True):
+                    if links:
+                        for name, url in links:
+                            st.markdown(f"• [{name}]({url})")
+                    else:
+                        st.info("No direct links found. Visit site.")
+
+# ==========================================
+# 8. EMPTY STATE & SUGGESTIONS
+# ==========================================
+
+elif not query:
+    st.markdown("### 🔥 Popular Now")
+    
+    # 5 Column Grid for Chips
+    chip_cols = st.columns(5)
+    for i, title in enumerate(POPULAR_TITLES):
+        # Use callback to handle click
+        chip_cols[i % 5].button(title, on_click=set_search_query, args=(title,), use_container_width=True)
+
+elif query and not st.session_state.results and not st.session_state.search_active:
+    st.warning(f"No results found for '{query}'.")
+    
+    # "Did You Mean" Logic
+    match = difflib.get_close_matches(query, POPULAR_TITLES, n=1, cutoff=0.5)
+    if match:
+        st.info(f"Did you mean **{match[0]}**?")
+        st.button(f"Search {match[0]}", on_click=set_search_query, args=(match[0],))
+    
+    # Google Fallback
+    st.markdown("---")
+    st.markdown("### 🕵️ Try External Search")
+    g_query = urllib.parse.quote(f"{query} anime download dual audio")
+    st.link_button("Search on Google", f"https://www.google.com/search?q={g_query}", type="primary")
