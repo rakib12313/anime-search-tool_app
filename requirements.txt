@@ -1,0 +1,7 @@
+streamlit
+cloudscraper
+beautifulsoup4
+requests
+pandas
+pytest
+firebase-admin
