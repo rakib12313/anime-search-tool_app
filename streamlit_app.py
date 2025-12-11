@@ -5,251 +5,255 @@ import urllib.parse
 import concurrent.futures
 import time
 import re
+import random
 
 # ==========================================
-# 1. VISUAL REDESIGN (CSS & CONFIG)
+# 1. CONFIGURATION & STYLING
 # ==========================================
 
 st.set_page_config(
-    page_title="ToonSearch X",
-    page_icon="🧬",
+    page_title="ToonSearch Pro",
+    page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# Cyberpunk / Modern Dark UI
+# Clean, Modern Dark UI
 st.markdown("""
 <style>
-    /* Main Background */
-    .stApp {
-        background-color: #050505;
-        background-image: radial-gradient(circle at 50% 0%, #1a1a2e 0%, #000000 70%);
-    }
-
-    /* Input Fields */
-    .stTextInput > div > div > input {
-        background-color: #111;
-        color: #fff;
+    .stApp { background-color: #0e1117; }
+    
+    /* Card Container */
+    .result-card {
+        background-color: #1a1c24;
         border: 1px solid #333;
         border-radius: 8px;
-        padding: 10px;
-    }
-    .stTextInput > div > div > input:focus {
-        border-color: #00e5ff;
-        box-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
-    }
-
-    /* Cards */
-    .anime-card {
-        background: #111;
-        border: 1px solid #222;
-        border-radius: 12px;
+        margin-bottom: 10px;
         overflow: hidden;
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-        margin-bottom: 20px;
-        position: relative;
+        transition: transform 0.2s;
     }
-    .anime-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 20px rgba(0, 229, 255, 0.15);
-        border-color: #00e5ff;
+    .result-card:hover {
+        border-color: #f63366;
+        transform: translateY(-3px);
     }
-
-    /* Images */
+    
+    /* Image */
     .card-img {
         width: 100%;
-        height: 220px;
+        height: 180px;
         object-fit: cover;
-        opacity: 0.8;
-        transition: opacity 0.3s;
+        opacity: 0.9;
     }
-    .anime-card:hover .card-img { opacity: 1; }
-
-    /* Text */
-    .card-content { padding: 15px; }
+    
+    /* Typography */
     .card-title {
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 1.1rem;
-        font-weight: 700;
+        padding: 10px;
+        font-size: 1rem;
+        font-weight: 600;
         color: #fff;
-        margin-bottom: 8px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    
-    /* Badges */
-    .source-badge {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        background: rgba(0,0,0,0.8);
-        color: #00e5ff;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 0.7rem;
-        font-weight: bold;
-        border: 1px solid #00e5ff;
-        backdrop-filter: blur(4px);
+    .card-meta {
+        padding: 0 10px 10px 10px;
+        font-size: 0.75rem;
+        color: #aaa;
+        display: flex;
+        justify-content: space-between;
     }
-
-    /* Status Bar */
-    .status-pill-success { color: #00ff00; font-size: 0.8rem; }
-    .status-pill-fail { color: #ff0000; font-size: 0.8rem; }
+    .site-tag {
+        background-color: #f63366;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: bold;
+    }
+    
+    /* Hide Streamlit Menu */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. SITE CONFIGURATION
+# 2. SITE DATA & MAPPINGS
 # ==========================================
 
-# Expanded and verified list
+# Mappings to fix "Indigo" -> "Season 1" issues
+QUERY_MAP = {
+    "indigo": "Season 1",
+    "orange": "Season 2",
+    "johto": "Season 3",
+    "s1": "Season 1", "s2": "Season 2", "s3": "Season 3",
+    "gen 1": "Season 1",
+    "pkmn": "Pokemon",
+    "dbz": "Dragon Ball Z"
+}
+
+# Verified Working Sites (as of Dec 2023/Jan 2024)
 SITES = [
-    { "name": "ToonWorld4All", "url": "https://toonworld4all.me/?s={}" },
+    { "name": "Toonworld4all", "url": "https://toonworld4all.me/?s={}" },
     { "name": "RareToons", "url": "https://raretoonsindia.rtilinks.com/?s={}" },
     { "name": "DeadToons", "url": "https://deadtoons.one/?s={}" },
-    { "name": "AnimeMafia", "url": "https://animemafia.in/?s={}" },
     { "name": "PureToons", "url": "https://puretoons.me/?s={}" },
+    { "name": "AnimeMafia", "url": "https://animemafia.in/?s={}" },
     { "name": "StarToons", "url": "https://startoonsindia.com/?s={}" },
     { "name": "ToonNation", "url": "https://toonnation.in/?s={}" },
     { "name": "CartoonsArea", "url": "https://cartoonsarea.xyz/?s={}" },
-    { "name": "AnimeTM", "url": "https://animetm.org/?s={}" },
-    { "name": "SeriesOT", "url": "https://seriesot.com/?s={}" }
+    { "name": "AnimeTM", "url": "https://animetm.org/?s={}" }
 ]
 
 if 'results' not in st.session_state: st.session_state.results = []
+if 'history' not in st.session_state: st.session_state.history = []
 if 'link_cache' not in st.session_state: st.session_state.link_cache = {}
-if 'scan_log' not in st.session_state: st.session_state.scan_log = {}
 
 # ==========================================
-# 3. ADVANCED SCRAPER ENGINE
+# 3. ROBUST SCRAPER ENGINE
 # ==========================================
 
 def get_scraper():
-    """Returns a CloudScraper instance with randomized browser headers."""
+    """Returns a CloudScraper session configured to mimic a real user."""
     return cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
     )
 
-def is_relevant(query, title):
+def smart_filter(query, title):
     """
-    STRICT FILTER: Checks if the title actually contains the search terms.
-    Prevents 'Pokemon' search showing 'Digimon'.
+    Decides if a result is relevant.
+    1. Expands abbreviations (pkmn -> pokemon).
+    2. Checks if at least ONE major word from query exists in title.
     """
-    q_words = query.lower().split()
-    t_lower = title.lower()
-    
-    # 1. Primary Keyword Check: The first word of query usually MUST exist
-    # (e.g., searching "Pokemon" -> Title must have "Pokemon")
-    if len(q_words) > 0:
-        if q_words[0] not in t_lower:
-            return False
+    # 1. Expand Query
+    words = query.lower().split()
+    expanded_words = []
+    for w in words:
+        expanded_words.append(w)
+        if w in QUERY_MAP:
+            expanded_words.extend(QUERY_MAP[w].lower().split())
             
-    # 2. Match Score: At least 50% of query words must appear
-    match_count = sum(1 for w in q_words if w in t_lower)
-    return (match_count / len(q_words)) >= 0.5
+    # 2. Check Title
+    title_lower = title.lower()
+    
+    # If the title contains the EXACT full query, it's a match
+    if query.lower() in title_lower:
+        return True
+        
+    # Check intersection (at least one significant word matches)
+    # Filter out common stop words
+    stop_words = {'season', 'episode', 'series', 'movie', 'dub', 'sub', 'hindi'}
+    sig_words = [w for w in expanded_words if w not in stop_words and len(w) > 2]
+    
+    if not sig_words: return True # Query was only stop words, show everything
+    
+    # Check if ANY significant word is in the title
+    for sw in sig_words:
+        if sw in title_lower:
+            return True
+            
+    return False
 
-def scrape_site(site, query):
+def scrape_worker(site, query):
     scraper = get_scraper()
     results = []
-    status = "Failed"
     
     try:
         url = site['url'].format(urllib.parse.quote_plus(query))
-        resp = scraper.get(url, timeout=12) # Increased timeout
+        resp = scraper.get(url, timeout=10)
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # BROAD SELECTORS: Catches almost all WordPress anime themes
-            articles = (
+            # === UNIVERSAL SCRAPING LOGIC ===
+            # Instead of looking for specific tags, look for patterns.
+            # Most themes have an <article> or <div> with class 'post'
+            
+            # 1. Broad Selection
+            containers = (
                 soup.select('article') or 
-                soup.select('.post-summary') or 
+                soup.select('.post') or 
                 soup.select('.result-item') or 
-                soup.select('.post') or
-                soup.select('.item') or
-                soup.select('div[id^="post-"]')
+                soup.select('div[id^="post-"]') or
+                soup.find_all('div', class_=re.compile(r'(post|entry|item)'))
             )
             
-            if not articles:
-                # Fallback: Try finding simple links if structural selectors fail
-                # This helps with sites that have very weird HTML
-                links = soup.find_all('a', href=True)
-                # Filter links that look like posts (length > 20, contains title)
-                # This is risky but helps "search all sites"
-                pass 
-
-            for item in articles:
+            for item in containers:
                 try:
-                    # Title Extraction
-                    title_node = item.find(['h1', 'h2', 'h3', 'h4'], class_=['title', 'entry-title', 'post-title'])
-                    if not title_node and item.name == 'a': title_node = item
-                    if not title_node: title_node = item.find('a', attrs={'rel': 'bookmark'})
+                    # Find Title & Link
+                    # Prioritize Heading tags
+                    title_tag = item.find(re.compile(r'^h[1-6]$'))
+                    a_tag = None
                     
-                    if not title_node: continue
+                    if title_tag:
+                        a_tag = title_tag.find('a')
                     
-                    a_tag = title_node if title_node.name == 'a' else title_node.find('a')
+                    # Fallback: Find any link with text
+                    if not a_tag:
+                        # Find all links in this container
+                        links = item.find_all('a', href=True)
+                        for l in links:
+                            if len(l.get_text(strip=True)) > 5: # Assume titles are > 5 chars
+                                a_tag = l
+                                break
+                    
                     if not a_tag: continue
                     
                     title = a_tag.get_text(strip=True)
                     link = a_tag['href']
                     
-                    # === SMART FILTERING ===
-                    # If strictly irrelevant, skip
-                    if not is_relevant(query, title):
+                    # Clean title
+                    if not title or len(title) < 3: continue
+                    
+                    # === APPLY SMART FILTER ===
+                    if not smart_filter(query, title):
                         continue
 
-                    # Image Extraction
-                    img_src = "https://via.placeholder.com/300x200/111/333?text=No+Image"
+                    # Find Thumbnail
+                    img_src = "https://via.placeholder.com/300x180?text=No+Img"
                     img = item.find('img')
                     if img:
+                        # Handle lazy loading
                         for attr in ['data-src', 'data-original', 'src', 'data-lazy-src', 'srcset']:
                             val = img.get(attr)
                             if val and 'http' in val:
                                 img_src = val.split(' ')[0]
                                 break
                     
-                    results.append({
-                        'site': site['name'], 
-                        'title': title, 
-                        'link': link, 
-                        'thumb': img_src
-                    })
+                    results.append({'site': site['name'], 'title': title, 'link': link, 'thumb': img_src})
                 except: continue
-            
-            status = f"Success ({len(results)})"
-        else:
-            status = f"Error {resp.status_code}"
-            
-    except Exception as e:
-        status = "Timeout/Block"
+                
+    except Exception:
+        pass
         
-    return results, status
+    return results
 
 def get_deep_links(url):
-    """Deep scans a page for Magnet/Drive/Mega links."""
+    """Scans for download buttons (Magnet, Mega, Drive)."""
     scraper = get_scraper()
     links = []
     try:
-        resp = scraper.get(url, timeout=10)
+        resp = scraper.get(url, timeout=12)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Expanded keywords
-        keywords = ['drive', 'mega', 'download', '480p', '720p', '1080p', 'magnet', 'torrent', 'batch', 'zip', 'rar', 'mediafire']
-        content = soup.find('div', class_=['entry-content', 'post-content', 'the-content']) or soup
+        keywords = ['drive', 'mega', 'download', '480p', '720p', '1080p', 'batch', 'zip', 'watch', 'magnet']
+        content = soup.find('div', class_=re.compile(r'(content|entry)')) or soup
         
         for a in content.find_all('a', href=True):
             txt = a.get_text(" ", strip=True).lower()
             href = a['href']
             
-            # Filter junk
             if 'javascript' in href or len(href) < 5 or '#' in href: continue
             
-            # Logic
-            if any(k in txt for k in keywords) or 'btn' in str(a.get('class', '')):
-                clean_name = txt[:40].title().strip() or "Download Link"
-                links.append((clean_name, href))
-                
+            # Check if keyword in text OR class contains 'btn'/'button'
+            is_download = any(k in txt for k in keywords) or 'btn' in str(a.get('class', '')) or 'button' in str(a.get('class', ''))
+            
+            if is_download:
+                name = txt[:40].title().strip() or "Download Link"
+                links.append((name, href))
     except: pass
     return list(set(links))
 
@@ -257,135 +261,160 @@ def get_deep_links(url):
 # 4. UI LOGIC
 # ==========================================
 
-# --- HERO SECTION ---
-st.markdown("<h1 style='text-align: center; color: #00e5ff; font-weight: 800; font-size: 3rem;'>TOONSEARCH <span style='color: white;'>X</span></h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #aaa; margin-bottom: 30px;'>Next-Gen Anime & Cartoon Indexer</p>", unsafe_allow_html=True)
-
-# --- SEARCH BAR ---
-c_search, c_btn = st.columns([5, 1])
-with c_search:
-    query = st.text_input("Search", placeholder="e.g. Pokemon Indigo League, Ben 10 Classic...", label_visibility="collapsed")
-with c_btn:
-    search_clicked = st.button("SEARCH", type="primary", use_container_width=True)
-
-# --- FILTERS ---
-with st.expander("⚙️ Advanced Filters", expanded=False):
-    c1, c2, c3 = st.columns(3)
-    f_strict = c1.checkbox("Strict Title Match", value=True, help="Removes results that don't match your keywords exactly.")
-    f_hindi = c2.checkbox("Hindi / Dual Audio", value=False)
-    f_1080 = c3.checkbox("1080p Only", value=False)
+# --- Sidebar ---
+with st.sidebar:
+    st.header("⚙️ Settings")
     
-    selected_sites = st.multiselect("Active Sources", [s['name'] for s in SITES], default=[s['name'] for s in SITES])
+    # Site Selector
+    st.subheader("Sources")
+    active_sites_names = st.multiselect("Active Sites", [s['name'] for s in SITES], default=[s['name'] for s in SITES])
+    
+    st.markdown("---")
+    
+    # Filters
+    st.subheader("Filters")
+    f_hindi = st.checkbox("Hindi Audio", value=False)
+    f_1080 = st.checkbox("1080p Only", value=False)
+    
+    st.markdown("---")
+    
+    # History
+    if st.session_state.history:
+        st.subheader("History")
+        for h in st.session_state.history:
+            if st.button(f"↺ {h}", key=f"hist_{h}", use_container_width=True):
+                # We will handle the click in the main logic by checking session state
+                st.session_state.query_override = h
+                st.rerun()
 
-# --- SEARCH EXECUTION ---
-if search_clicked and query:
+# --- Main Area ---
+st.title("⚡ ToonSearch Pro")
+
+# Search Bar Handling
+query_val = ""
+if 'query_override' in st.session_state:
+    query_val = st.session_state.query_override
+    del st.session_state.query_override
+
+c1, c2 = st.columns([5, 1])
+query = c1.text_input("Search Anime...", value=query_val, placeholder="e.g. Pokemon Indigo, Naruto Shippuden")
+do_search = c2.button("SEARCH", type="primary", use_container_width=True)
+
+# --- Search Execution ---
+if do_search and query:
+    # Update History
+    if query not in st.session_state.history:
+        st.session_state.history.insert(0, query)
+        st.session_state.history = st.session_state.history[:5]
+    
+    # Prepare Search
+    active_sites = [s for s in SITES if s['name'] in active_sites_names]
+    
+    # Expand Query for "Indigo" cases
+    # We pass the raw query to scraper, but we can also append expanded terms if needed
+    # Ideally, we search "Pokemon Indigo" and the Smart Filter allows "Pokemon Season 1" through
+    # if we mapped it correctly.
+    
+    search_q = query
+    # If user types "Pokemon Indigo", we want to ensure we find "Pokemon Season 1"
+    # The scraping URL usually does a fuzzy search on the site.
+    
     st.session_state.results = []
-    st.session_state.scan_log = {}
     
-    active_sites_list = [s for s in SITES if s['name'] in selected_sites]
+    # Progress UI
+    progress = st.progress(0)
+    status = st.empty()
+    status.write(f"Searching for **{search_q}**...")
     
-    if not active_sites_list:
-        st.error("Select at least one source!")
-    else:
-        status_box = st.status("Initializing Neural Handshake...", expanded=True)
-        results_bucket = []
+    results_acc = []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(scrape_worker, s, search_q): s for s in active_sites}
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            # Launch Threads
-            future_map = {executor.submit(scrape_site, s, query): s for s in active_sites_list}
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            site = futures[future]
+            completed += 1
+            progress.progress(completed / len(active_sites))
             
-            for future in concurrent.futures.as_completed(future_map):
-                site_obj = future_map[future]
-                site_name = site_obj['name']
-                try:
-                    data, msg = future.result()
-                    st.session_state.scan_log[site_name] = msg
-                    if data:
-                        results_bucket.extend(data)
-                        status_box.write(f"✅ {site_name}: Found {len(data)}")
-                    else:
-                        if "Timeout" in msg:
-                            status_box.write(f"⚠️ {site_name}: Connection Timed Out")
-                        else:
-                            status_box.write(f"❌ {site_name}: No relevant results")
-                except:
-                    st.session_state.scan_log[site_name] = "Critical Error"
-        
-        st.session_state.results = results_bucket
-        status_box.update(label="Scan Complete", state="complete", expanded=False)
+            try:
+                data = future.result()
+                if data:
+                    results_acc.extend(data)
+                    status.write(f"✅ {site['name']}: Found {len(data)} results")
+            except: pass
+            
+    st.session_state.results = results_acc
+    progress.empty()
+    status.empty()
 
-# --- RESULTS DISPLAY ---
+# --- Results Display ---
 if st.session_state.results:
     data = st.session_state.results
     
     # Apply Filters
     if f_hindi:
-        data = [x for x in data if "hindi" in x['title'].lower() or "dual" in x['title'].lower()]
+        data = [r for r in data if "hindi" in r['title'].lower() or "dual" in r['title'].lower()]
     if f_1080:
-        data = [x for x in data if "1080p" in x['title'].lower()]
-        
-    st.markdown(f"### Found {len(data)} items")
+        data = [r for r in data if "1080p" in r['title'].lower()]
     
-    # GRID SYSTEM
+    # Header & Tools
+    c_res, c_tool = st.columns([3, 1])
+    c_res.markdown(f"### Found {len(data)} Results")
+    
+    if data:
+        clip_text = "\n".join([f"{r['title']} -> {r['link']}" for r in data])
+        c_tool.download_button("💾 Save List", clip_text, "links.txt", use_container_width=True)
+    
+    # Grid Layout
     cols = st.columns(3)
-    for idx, item in enumerate(data):
-        with cols[idx % 3]:
+    for i, item in enumerate(data):
+        with cols[i % 3]:
             # HTML Card
             st.markdown(f"""
-            <div class="anime-card">
-                <div class="source-badge">{item['site']}</div>
+            <div class="result-card">
                 <img src="{item['thumb']}" class="card-img">
-                <div class="card-content">
-                    <div class="card-title" title="{item['title']}">{item['title']}</div>
+                <div class="card-title" title="{item['title']}">{item['title']}</div>
+                <div class="card-meta">
+                    <span class="site-tag">{item['site']}</span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
             
             # Interactive Buttons
-            btn_col1, btn_col2 = st.columns(2)
-            btn_col1.link_button("🌐 Visit", item['link'], use_container_width=True)
+            b1, b2 = st.columns(2)
+            b1.link_button("🌐 Open", item['link'], use_container_width=True)
             
-            # Deep Link Extractor
-            unique_key = f"{idx}_{item['link']}"
-            if btn_col2.button("📥 Links", key=unique_key, use_container_width=True):
+            key = f"dl_{i}_{item['link']}"
+            if b2.button("📥 Links", key=key, use_container_width=True):
                 if item['link'] not in st.session_state.link_cache:
-                    with st.spinner("Decrypting..."):
+                    with st.spinner("Scanning..."):
                         links = get_deep_links(item['link'])
                         st.session_state.link_cache[item['link']] = links
             
-            # Show Links if cached
+            # Show Links
             if item['link'] in st.session_state.link_cache:
                 d_links = st.session_state.link_cache[item['link']]
-                with st.expander("Download Options", expanded=True):
+                with st.expander("Downloads", expanded=True):
                     if d_links:
                         for n, l in d_links:
                             st.markdown(f"• [{n}]({l})")
                     else:
                         st.warning("No direct links found.")
 
-# --- CONNECTION DASHBOARD (Footer) ---
-if st.session_state.scan_log:
-    with st.expander("📡 Network Status Dashboard"):
-        st.write("Live status of connected anime repositories:")
-        c_log1, c_log2 = st.columns(2)
-        
-        # Split logs into two columns
-        items = list(st.session_state.scan_log.items())
-        half = len(items) // 2
-        
-        for k, v in items[:half]:
-            color = "#00ff00" if "Success" in v else "#ff0000"
-            c_log1.markdown(f"**{k}**: <span style='color:{color}'>{v}</span>", unsafe_allow_html=True)
-            
-        for k, v in items[half:]:
-            color = "#00ff00" if "Success" in v else "#ff0000"
-            c_log2.markdown(f"**{k}**: <span style='color:{color}'>{v}</span>", unsafe_allow_html=True)
+elif do_search:
+    st.warning("No results found. Try simplifying your query.")
+    st.markdown("### Suggestions")
+    st.markdown("- Instead of 'Pokemon Indigo League Full Episodes', try **'Pokemon Season 1'**")
+    st.markdown("- Instead of 'Ben 10 Classic', try **'Ben 10'** and look for Season 1.")
 
-# --- EMPTY STATE ---
+# --- Empty State ---
 elif not query:
-    st.markdown("""
-    <div style='text-align: center; padding: 50px; opacity: 0.5;'>
-        <h2>Start your search...</h2>
-        <p>Supports: Pokemon, Naruto, Ben 10, Doraemon & More</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("### Popular Searches")
+    pop_cols = st.columns(5)
+    populars = ["Pokemon", "Naruto", "Dragon Ball Z", "Ben 10", "Doraemon", "Shinchan", "One Piece", "Jujutsu Kaisen", "Demon Slayer", "Avengers"]
+    
+    for i, p in enumerate(populars):
+        if pop_cols[i % 5].button(p, use_container_width=True):
+            st.session_state.query_override = p
+            st.rerun()
