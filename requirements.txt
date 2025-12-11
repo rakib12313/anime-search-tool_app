@@ -1,3 +1,5 @@
 streamlit
-beautifulsoup4
 cloudscraper
+beautifulsoup4
+brotli
+requests
